@@ -31,11 +31,12 @@ class GithubWebhookView(APIView):
 
     @method_decorator(ratelimit(key='ip', rate='60/h', method='POST', block=True))
     def post(self, request):
-        # 1. Get headers
+        # Read raw body FIRST before accessing request.data
+        raw_body = request.body
+
         signature = request.headers.get('X-Hub-Signature-256', '')
         event_type = request.headers.get('X-GitHub-Event', '')
 
-        # 2. Only handle pull_request events
         if event_type == 'ping':
             return Response(
                 {'success': True, 'data': {'message': 'pong'}},
@@ -48,7 +49,6 @@ class GithubWebhookView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 3. Parse payload
         try:
             payload = request.data
             repo_name = payload.get('repository', {}).get('name', '')
@@ -59,7 +59,6 @@ class GithubWebhookView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 4. Find the repository
         repository = get_repository_by_full_name(repo_owner, repo_name)
         if not repository:
             return Response(
@@ -67,8 +66,6 @@ class GithubWebhookView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # 5. Verify HMAC signature
-        raw_body = request.body
         from apps.webhooks.services import verify_webhook_secret
         if not verify_webhook_secret(raw_body, signature, repository.webhook_secret):
             logger.warning(f"Invalid webhook signature for repo {repository.full_name}")
@@ -77,7 +74,6 @@ class GithubWebhookView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # 6. Parse PR data
         parsed = parse_pr_webhook(payload)
         action = parsed.get('action', '')
 
@@ -87,19 +83,11 @@ class GithubWebhookView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        # 7. Store webhook event
         event = create_webhook_event(repository, parsed, payload)
 
-        # 8. Dispatch Celery task asynchronously
         from apps.webhooks.tasks import process_webhook_event
         process_webhook_event.delay(str(event.id))
 
-        logger.info(
-            f"Webhook received for {repository.full_name} "
-            f"PR #{parsed['pr_number']} action={action}"
-        )
-
-        # 9. Return 200 immediately
         return Response(
             {'success': True, 'data': {'message': 'Webhook received', 'event_id': str(event.id)}},
             status=status.HTTP_200_OK,

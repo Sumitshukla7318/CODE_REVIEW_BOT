@@ -170,4 +170,11 @@ CELERY_BEAT_SCHEDULE = {
 WEBHOOK_SECRET_ENCRYPTION_KEY = env('WEBHOOK_SECRET_ENCRYPTION_KEY', default='')
 
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}

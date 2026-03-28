@@ -14,12 +14,25 @@ class RepositorySerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         attrs['full_name'] = f"{attrs['owner']}/{attrs['name']}"
+
+        # Check for duplicate — return 400 instead of 500
+        request = self.context.get('request')
+        if request and request.user:
+            exists = Repository.objects.filter(
+                user=request.user,
+                full_name=attrs['full_name'],
+                is_active=True,
+            ).exists()
+            if exists:
+                raise serializers.ValidationError(
+                    {'full_name': 'You already have a repository with this name registered.'}
+                )
+
         return attrs
 
     def create(self, validated_data):
         plain_secret, encrypted = generate_webhook_secret()
         validated_data['webhook_secret'] = encrypted
-        # Store plain secret in context so view can show it once
         instance = super().create(validated_data)
         instance._plain_secret = plain_secret
         return instance

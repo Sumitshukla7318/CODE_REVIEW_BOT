@@ -1,4 +1,5 @@
 from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import ImproperlyConfigured
 
 
 def validate_environment():
@@ -7,10 +8,10 @@ def validate_environment():
     Raises ImproperlyConfigured if any are missing.
     """
     from django.conf import settings
+    import os
 
     required_vars = {
         'SECRET_KEY': settings.SECRET_KEY,
-        'DATABASE_URL': None,  # checked via DB connection
         'REDIS_URL': settings.REDIS_URL,
         'WEBHOOK_SECRET_ENCRYPTION_KEY': settings.WEBHOOK_SECRET_ENCRYPTION_KEY,
     }
