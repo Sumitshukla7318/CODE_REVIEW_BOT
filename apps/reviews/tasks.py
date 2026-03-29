@@ -192,6 +192,7 @@ def perform_ai_review(self, pr_diff_id: str):
 
     except Exception as exc:
         logger.error(f"Error performing AI review {pr_diff_id}: {exc}")
+
         review.status = CodeReview.ReviewStatus.FAILED
         review.error_message = str(exc)
         review.save(update_fields=['status', 'error_message'])
@@ -199,6 +200,22 @@ def perform_ai_review(self, pr_diff_id: str):
         event.status = 'FAILED'
         event.error_message = str(exc)
         event.save(update_fields=['status', 'error_message'])
+
+        # Only post failure comment on the LAST retry
+        # Don't spam the PR with a comment on every retry attempt
+        if self.request.retries >= self.max_retries - 1:
+            try:
+                from apps.reviews.github import post_failure_comment
+                post_failure_comment(
+                    owner=repository.owner,
+                    repo=repository.name,
+                    pr_number=event.pr_number,
+                    error_message=str(exc),
+                    review_id=str(review.id),
+                )
+            except Exception as comment_exc:
+                logger.error(f"Failed to post failure comment: {comment_exc}")
+                # Never let comment failure block the retry logic
 
         raise self.retry(exc=exc, countdown=2 ** self.request.retries * 120)
     
