@@ -1,39 +1,30 @@
-<div align="center">
+# 🤖 AI Code Review Bot
 
-```
-╔═══════════════════════════════════════════════════════════╗
-║                                                           ║
-║           🤖  AI CODE REVIEW BOT                         ║
-║                                                           ║
-║     Self-hosted. AI-powered. Free.                        ║
-║     Your pull requests reviewed before coffee gets cold.  ║
-║                                                           ║
-╚═══════════════════════════════════════════════════════════╝
+> Self-hosted AI-powered code reviewer. Open a PR, get a review. Free. No subscriptions.
+
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat-square)](https://python.org)
+[![Django](https://img.shields.io/badge/Django-5.x-green?style=flat-square)](https://djangoproject.com)
+[![Tests](https://img.shields.io/badge/Tests-66%20passing-brightgreen?style=flat-square)](#testing)
+[![Coverage](https://img.shields.io/badge/Coverage-79%25-brightgreen?style=flat-square)](#testing)
+[![License](https://img.shields.io/badge/License-MIT-purple?style=flat-square)](LICENSE)
 
 ---
 
-## The Problem
+## Why I Built This
 
-Every team I've seen has the same bottleneck — **pull requests waiting for review**.
+Every team has the same problem — PRs sitting in review queue for hours. Senior devs are busy. Junior devs miss bugs. Code quality is inconsistent — same issue caught on Monday, missed on Friday.
 
-Senior developers are busy. Junior developers miss security bugs. Code review is inconsistent — same issue gets caught on Monday, missed on Friday. And paid tools like CodeRabbit start at $15/month per user. For a 10-person team that's $150/month just to have a robot read your code.
+Paid tools like CodeRabbit fix this but cost $15/user/month. For a 10-person team that is $1,800 a year just to have a robot read code.
 
-So I built my own.
+So I built my own. Self-hosted. Free AI via Groq. Works the same way.
 
-**AI Code Review Bot** is a self-hosted backend system that:
-- Receives GitHub PR events via webhook
-- Fetches the code diff automatically
-- Sends it to an AI model for structured review
-- Posts the feedback directly on your PR as a comment
-- Stores everything so you can query, filter, and track over time
-
-Zero dollars. Runs on your own server. Works in minutes.
+**What it does:** Developer opens a PR → bot receives the webhook → fetches the diff → sends to AI → posts a structured review comment directly on the PR. Automatically. Every time.
 
 ---
 
-## What It Actually Does
+## What the Review Looks Like
 
-Open a PR → bot posts this on it automatically:
+When you open a PR, the bot posts this comment automatically:
 
 ```
 🤖 AI Code Review
@@ -44,365 +35,341 @@ Model:  llama-3.1-8b-instant
 
 📝 Summary
 This PR adds a user data query function but contains a critical SQL injection
-vulnerability and a hardcoded credential. Needs immediate attention before merge.
+vulnerability and a hardcoded credential. Needs attention before merge.
 
 🔍 Issues Found
 
 🔴 Critical
   calculator.py
-  Issue:  SQL injection — user_id injected directly into query string
-  Fix:    Use parameterized queries: cursor.execute(query, (user_id,))
+  Issue:   SQL injection — user_id injected directly into query string
+  Fix:     Use parameterized queries: cursor.execute(query, (user_id,))
 
 🔴 Critical
   calculator.py
-  Issue:  Hardcoded password "admin123" visible in source code
-  Fix:    Move to environment variables or a secrets manager
+  Issue:   Hardcoded password "admin123" visible in source code
+  Fix:     Move to environment variables or a secrets manager
 
 🟡 Warning
   calculator.py  Line 2
-  Issue:  divide() has no zero-division guard
-  Fix:    Add: if b == 0: raise ValueError("Cannot divide by zero")
+  Issue:   divide() has no zero-division guard
+  Fix:     Add: if b == 0: raise ValueError("Cannot divide by zero")
 ```
 
-> The AI caught SQL injection, hardcoded credentials, and a division bug in a 10-line file.
-> Score 42 = blocked from merge. That's the point.
+Score below 75 means not approved. The AI caught SQL injection, hardcoded credentials, and a logic bug in a 10-line file.
 
 ---
 
 ## Architecture
 
 ```
-                        ┌─────────────────────┐
-                        │     GitHub          │
-                        │   Pull Request      │
-                        └──────────┬──────────┘
-                                   │ webhook POST
-                                   ▼
-┌──────────────────────────────────────────────────────────┐
-│                    DJANGO API SERVER                      │
-│                                                          │
-│  POST /api/webhooks/github/                              │
-│  ┌─────────────────────────────────────────────────┐     │
-│  │ 1. Read raw body (before parsing — critical)    │     │
-│  │ 2. Verify HMAC-SHA256 signature                 │     │
-│  │ 3. Decrypt webhook secret from DB               │     │
-│  │ 4. Validate PR action (opened/sync/reopened)    │     │
-│  │ 5. Store WebhookEvent → status: PENDING         │     │
-│  │ 6. Queue Celery task → return 200 immediately   │     │
-│  └─────────────────────────────────────────────────┘     │
-└──────────────────────────┬───────────────────────────────┘
-                           │ .delay() → Redis queue
-                           ▼
-┌──────────────────────────────────────────────────────────┐
-│                   CELERY WORKER                          │
-│                                                          │
-│  Task 1: process_webhook_event()                         │
-│  └── validates event, sets PROCESSING status            │
-│      └── chains to Task 2                               │
-│                                                          │
-│  Task 2: fetch_pr_diff()                                │
-│  └── calls GitHub API → gets changed files              │
-│      └── filters: removes lock files, images, migrations │
-│          └── stores PRDiff → chains to Task 3           │
-│                                                          │
-│  Task 3: perform_ai_review()                            │
-│  └── checks Redis cache (same commit = skip AI)         │
-│      └── builds structured prompt                       │
-│          └── calls Groq API (LLaMA 3.1)                 │
-│              └── parses JSON response                   │
-│                  └── stores CodeReview + ReviewIssues   │
-│                      └── posts comment on GitHub PR     │
-└──────────────────────────┬───────────────────────────────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-        PostgreSQL       Redis       GitHub PR
-        (reviews,       (cache +     (comment
-         issues)         broker)      posted)
-```
+Developer opens PR
+        |
+        | GitHub sends webhook
+        v
+POST /api/webhooks/github/
+        |
+        | 1. Verify HMAC-SHA256 signature
+        | 2. Find registered repository in DB
+        | 3. Store WebhookEvent  (status: PENDING)
+        | 4. Queue Celery task
+        | 5. Return 200 immediately
+        |
+        v
+  [ Redis Queue ]
+        |
+        v
+  Celery Worker
+        |
+        |-- Task 1: Validate PR action (opened / sync / reopened)
+        |
+        |-- Task 2: Fetch diff from GitHub API
+        |           Filter lock files, images, migrations
+        |           Store PRDiff in PostgreSQL
+        |
+        |-- Task 3: Build prompt from filtered diff
+        |           Call Groq API  (LLaMA 3.1 — free tier)
+        |           Parse JSON response
+        |           Store CodeReview + ReviewIssues
+        |           Post comment on GitHub PR
+        |
+        v
+   WebhookEvent status → COMPLETED
 
-**Celery Beat** (separate scheduler process) runs two background tasks:
-- Every 5 minutes → auto-retry stuck reviews
-- Every night at 2am → clean up webhook logs older than 30 days
+
+Celery Beat runs two scheduled tasks:
+  Every 5 minutes  →  auto-retry reviews stuck in PROCESSING
+  Every night 2am  →  delete webhook logs older than 30 days
+```
 
 ---
 
 ## Tech Stack
 
-I didn't pick tools randomly. Here's the reasoning behind each choice:
-
-| Tool | Why this, not something else |
-|------|------------------------------|
-| **Django 5.x** | Battle-tested ORM, admin panel, migrations. FastAPI is faster but Django's ecosystem (simplejwt, celery integration, DRF) saved weeks of work. For a CRUD-heavy API with auth, Django wins. |
-| **Django REST Framework** | Serializers handle validation + transformation in one place. ViewSets give you CRUD with 10 lines. The alternative was writing all of that by hand. |
-| **Celery + Redis** | GitHub expects a webhook response in under 10 seconds. AI review takes 5-15 seconds. Without async processing, every webhook would time out. Celery with Redis broker was the obvious answer — battle-tested, Django-native. |
-| **PostgreSQL** | JSONField for raw payloads, UUID primary keys, complex queries with joins across 6 models. SQLite would have buckled. PostgreSQL handles all of it. |
-| **Groq API (LLaMA 3.1)** | Free tier. Genuinely fast (sub-3s responses). The llama-3.1-8b-instant model is good enough to catch SQL injections and hardcoded credentials. Paid alternatives (GPT-4, Claude) cost money. The whole point of this project is zero cost. |
-| **Fernet Encryption** | Webhook secrets can't be stored as plain text or even hashed. We need to recover them for HMAC verification. Fernet (AES-128-CBC + HMAC) gives us reversible encryption with authenticated encryption — can't decrypt without the key, can't tamper without detection. |
-| **drf-spectacular** | Auto-generates OpenAPI schema from code. Zero manual documentation. Swagger UI works out of the box. |
-| **factory-boy** | Creating realistic test data with relationships (user → repo → webhook → diff → review → issues) in 3 lines instead of 40. |
+| Tool | Why this one |
+|------|-------------|
+| **Django 5.x** | FastAPI is faster but Django's ecosystem — JWT, Celery integration, DRF, ORM — saved weeks. For a CRUD-heavy API with auth, Django wins. |
+| **Django REST Framework** | Serializers handle validation and transformation in one place. ViewSets give full CRUD in 10 lines. |
+| **Celery + Redis** | GitHub expects a webhook response under 10 seconds. AI review takes 5–15 seconds. Without async, every webhook times out. Celery with Redis broker solves this cleanly. |
+| **PostgreSQL** | JSONField for raw payloads, UUID primary keys, complex joins across 6 models. SQLite would not handle this. |
+| **Groq API (LLaMA 3.1)** | Free tier. Sub-3 second responses. Catches SQL injections and hardcoded credentials reliably. The whole point is zero cost — paid alternatives defeat the purpose. |
+| **Fernet Encryption** | Webhook secrets cannot be hashed — we need the plain value back for HMAC verification. Fernet gives reversible AES-128 encryption. Even if someone dumps the database, secrets are unreadable without the encryption key stored separately in env vars. |
+| **pytest + factory-boy** | Creating test data with 6 linked models in 3 lines instead of 40. |
 
 ---
 
 ## How to Run Locally
 
-### Prerequisites
+### Requirements
+
 - Python 3.11+
 - PostgreSQL
 - Redis
 
-### 1. Clone and set up
+### Setup
 
 ```bash
 git clone https://github.com/Sumitshukla7318/code-review-bot.git
 cd code-review-bot
 
 python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+source venv/bin/activate
 
 pip install -r requirements.txt
-```
 
-### 2. Environment variables
-
-```bash
 cp .env.example .env
 ```
 
-Open `.env` and fill in:
+### Fill in `.env`
 
 ```env
-# Generate this:
 # python -c "import secrets; print(secrets.token_hex(50))"
-SECRET_KEY=your-secret-key-here
+SECRET_KEY=your-secret-key
 
 DEBUG=True
 ALLOWED_HOSTS=localhost,127.0.0.1
 
-# Your local PostgreSQL
 DATABASE_URL=postgresql://postgres:yourpassword@localhost:5432/code_review_bot
-
-# Redis (default if running locally)
 REDIS_URL=redis://localhost:6379/0
 
 # Free at console.groq.com
-GROQ_API_KEY=gsk_your_key_here
+GROQ_API_KEY=gsk_your_key
 
 # github.com/settings/tokens → select repo scope
-GITHUB_TOKEN=ghp_your_token_here
+GITHUB_TOKEN=ghp_your_token
 
-# Generate this:
 # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-WEBHOOK_SECRET_ENCRYPTION_KEY=your-fernet-key-here
+WEBHOOK_SECRET_ENCRYPTION_KEY=your-fernet-key
 
 DJANGO_SETTINGS_MODULE=config.settings.development
 ```
 
-### 3. Database setup
+### Database
 
 ```bash
-# Create the database
 psql -U postgres -c "CREATE DATABASE code_review_bot;"
-
-# Run migrations
 python manage.py migrate
-
-# (Optional) Create admin user
-python manage.py createsuperuser
 ```
 
-### 4. Start all three processes
-
-Open three terminals:
+### Start everything (3 terminals)
 
 ```bash
 # Terminal 1 — Django server
 python manage.py runserver
 
-# Terminal 2 — Celery worker (processes tasks)
+# Terminal 2 — Celery worker
 celery -A config worker --loglevel=info
 
-# Terminal 3 — Celery beat (periodic tasks)
+# Terminal 3 — Celery beat scheduler
 celery -A config beat --loglevel=info
 ```
 
-### 5. Or use Docker (one command)
+### Or Docker (one command)
 
 ```bash
-cp .env.example .env
-# Fill in GROQ_API_KEY, GITHUB_TOKEN, WEBHOOK_SECRET_ENCRYPTION_KEY
-
 docker-compose up --build
 ```
 
-Everything starts automatically: PostgreSQL, Redis, Django, Celery worker, Celery beat.
+Starts PostgreSQL, Redis, Django, Celery worker, Celery beat all together.
 
-### 6. Verify it's working
+### Verify
 
-```bash
-# Check Swagger docs
-open http://localhost:8000/api/docs/
-
-# Register an account
-curl -X POST http://localhost:8000/api/auth/register/ \
-  -H "Content-Type: application/json" \
-  -d '{"email":"you@example.com","username":"you","password":"Test1234!","password2":"Test1234!"}'
-
-# Login
-curl -X POST http://localhost:8000/api/auth/login/ \
-  -H "Content-Type: application/json" \
-  -d '{"email":"you@example.com","password":"Test1234!"}'
-```
+Open `http://localhost:8000/api/docs/` — Swagger UI with all endpoints.
 
 ---
 
-## Connecting a Real GitHub Repository
+## Connect a Real GitHub Repo
 
 **Step 1 — Register your repo**
+
 ```bash
 curl -X POST http://localhost:8000/api/repositories/ \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "your-repo-name",
+    "name": "your-repo",
     "owner": "your-github-username",
-    "github_url": "https://github.com/your-github-username/your-repo-name"
+    "github_url": "https://github.com/your-username/your-repo"
   }'
 ```
 
-Copy the `webhook_secret` from the response. **This is shown only once.**
+Copy the `webhook_secret` from the response. **Shown only once.**
 
 **Step 2 — Add webhook on GitHub**
 
-Go to: `https://github.com/your-username/your-repo/settings/hooks/new`
+Go to your repo → Settings → Webhooks → Add webhook
 
 ```
-Payload URL:   https://your-server.com/api/webhooks/github/
-Content type:  application/json
-Secret:        [paste webhook_secret from Step 1]
-Events:        ✅ Pull requests
+Payload URL:  https://your-domain.com/api/webhooks/github/
+Content type: application/json
+Secret:       paste the webhook_secret here
+Events:       Pull requests only
 ```
 
 **Step 3 — Open a PR**
 
-The bot will:
-1. Receive the event (< 100ms)
-2. Fetch the diff (1-3s)
-3. Review with AI (3-10s)
-4. Post comment on your PR (< 1s)
+The bot fetches the diff, reviews it, and posts the comment. Done.
 
 ---
 
 ## API Reference
 
-### Auth
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/auth/register/` | Create account |
-| `POST` | `/api/auth/login/` | Login → JWT tokens |
-| `POST` | `/api/auth/token/refresh/` | Refresh access token |
-| `POST` | `/api/auth/logout/` | Blacklist refresh token |
+**Auth**
 
-### Repositories
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/repositories/` | List your repos |
-| `POST` | `/api/repositories/` | Register a repo |
-| `GET` | `/api/repositories/{id}/` | Repo detail |
-| `DELETE` | `/api/repositories/{id}/` | Soft delete |
-| `POST` | `/api/repositories/{id}/rotate-secret/` | New webhook secret |
-| `GET` | `/api/repositories/{id}/stats/` | Review statistics |
-| `GET` | `/api/repositories/{id}/reviews/` | All reviews for repo |
-
-### Reviews
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/reviews/` | All reviews (with filters) |
-| `GET` | `/api/reviews/{id}/` | Review detail + issues |
-| `GET` | `/api/reviews/{id}/issues/` | Just the issues |
-| `POST` | `/api/reviews/{id}/retry/` | Retry failed review |
-
-**Filter reviews:**
 ```
-GET /api/reviews/?repo=my-repo
-GET /api/reviews/?pr_number=42
-GET /api/reviews/?severity=critical
+POST   /api/auth/register/          Create account
+POST   /api/auth/login/             Login, get JWT tokens
+POST   /api/auth/token/refresh/     Refresh access token
+POST   /api/auth/logout/            Blacklist refresh token
 ```
 
-### Webhook
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/webhooks/github/` | GitHub webhook receiver |
-| `GET` | `/api/webhooks/events/` | Inspect received events |
+**Repositories**
 
-Full interactive docs: `http://localhost:8000/api/docs/`
+```
+GET    /api/repositories/                       List your repos
+POST   /api/repositories/                       Register a repo
+GET    /api/repositories/{id}/                  Repo detail
+DELETE /api/repositories/{id}/                  Soft delete
+POST   /api/repositories/{id}/rotate-secret/    Generate new webhook secret
+GET    /api/repositories/{id}/stats/            Review statistics (cached)
+GET    /api/repositories/{id}/reviews/          All reviews for this repo
+```
+
+**Reviews**
+
+```
+GET    /api/reviews/                     All reviews
+GET    /api/reviews/?repo=name           Filter by repo
+GET    /api/reviews/?pr_number=42        Filter by PR number
+GET    /api/reviews/?severity=critical   Filter by issue severity
+GET    /api/reviews/{id}/                Review detail with issues
+GET    /api/reviews/{id}/issues/         Just the issues list
+POST   /api/reviews/{id}/retry/          Retry a failed review
+```
+
+**Webhook**
+
+```
+POST   /api/webhooks/github/        GitHub webhook receiver
+GET    /api/webhooks/events/        Inspect received events (debug)
+```
 
 ---
 
 ## Testing
 
 ```bash
-# Run all 66 tests
+# All tests
 pytest
 
 # With coverage report
 pytest --cov=apps --cov-report=term-missing
 
-# Run one file
+# One file
 pytest tests/test_ai_review.py -v
 ```
 
-**Coverage: 79%** across 66 tests
+**66 tests. 79% coverage.**
 
-| Test File | What It Covers |
-|-----------|----------------|
+| File | What it covers |
+|------|----------------|
 | `test_webhook_signature.py` | HMAC verification — 7 edge cases including timing attack prevention |
-| `test_webhook_receiver.py` | Full webhook flow with mocked Celery |
-| `test_auth.py` | Register, login, logout, token refresh |
-| `test_repositories.py` | CRUD, soft delete, secret rotation, ownership isolation |
-| `test_ai_review.py` | File filtering, prompt building, response parsing |
-| `test_review_api.py` | List/filter/retry, cross-user isolation |
-| `test_celery_tasks.py` | Task chain, error handling, retry logic |
+| `test_webhook_receiver.py` | Full webhook flow, signature validation, ignored actions |
+| `test_auth.py` | Register, login, logout, bad credentials |
+| `test_repositories.py` | CRUD, soft delete, secret rotation, cross-user isolation |
+| `test_ai_review.py` | File filtering, prompt building, JSON parsing edge cases |
+| `test_review_api.py` | List filters, retry logic, ownership enforcement |
+| `test_celery_tasks.py` | Task chain, error handling, retry backoff |
 
 ---
 
-## Challenges Faced
+## Challenges and How I Solved Them
 
-### 1. `request.body` after `request.data` crash
+### request.body crash after request.data
 
-Django's request object reads the body stream once. If you access `request.data` first (which DRF does automatically for JSON parsing), `request.body` becomes empty. This caused HMAC verification to silently fail on every webhook.
+Django reads the request body as a stream — once consumed, it is gone. DRF accesses `request.data` automatically for JSON parsing, which consumes the stream. Accessing `request.body` after that throws `RawPostDataException`. HMAC verification was silently failing on every webhook because of this.
 
-**Fix:** Read `request.body` as the very first line of the webhook view, before any access to `request.data`. Documented in code with a comment so nobody "fixes" it later.
+**Fix:** Read `request.body` as the very first line of the webhook view, before anything else touches the request. One line change, one hour to debug.
 
-### 2. Webhook secrets — hash vs encrypt
+---
 
-First implementation stored SHA-256 hash of the webhook secret. Looked secure. Problem: HMAC verification needs the **plain secret**, not the hash. You can't reverse a hash. So verification always failed.
+### Webhook secrets — hash vs encrypt
 
-**Fix:** Switched to Fernet symmetric encryption. Store ciphertext, decrypt at verification time. Encryption key lives in env var — separate from the encrypted data. Even if someone gets the database, they can't recover secrets without the key.
+First version stored a SHA-256 hash of the webhook secret. Looked secure. The problem: HMAC verification needs the plain secret, not the hash. You cannot reverse a hash. Signature verification failed 100% of the time in production.
 
-### 3. Groq model deprecation mid-development
+**Fix:** Switched to Fernet symmetric encryption. Store ciphertext. Decrypt at verification time. Encryption key lives in environment variable, separate from the database.
 
-`llama3-8b-8192` was decommissioned while building this. Every API call started returning 400. No warning, no grace period.
+---
 
-**Fix:** Updated to `llama-3.1-8b-instant`. Also switched from Groq SDK to direct `requests.post()` to avoid SDK version conflicts — HTTP APIs don't deprecate.
+### Groq model deprecated mid-development
 
-### 4. AI returning markdown instead of JSON
+`llama3-8b-8192` was decommissioned with no warning. Every API call returned 400. Switched to `llama-3.1-8b-instant`. Also replaced the Groq SDK with a direct `requests.post()` call to avoid SDK version conflicts going forward — raw HTTP does not deprecate.
 
-The system prompt says "return ONLY valid JSON". The AI still occasionally wraps it in ` ```json ``` ` markdown fences. `json.loads()` on that throws an exception.
+---
 
-**Fix:** `parse_ai_response()` strips markdown fences before parsing. If parsing still fails, it returns a safe default (score=0, approved=False) instead of crashing the task.
+### AI returning markdown instead of JSON
 
-### 5. Celery task chain — how to pass data between tasks
+The system prompt says return only valid JSON. The model still wraps responses in markdown code fences sometimes. `json.loads()` on that throws an exception and crashes the task.
 
-Task 2 needs the `pr_diff_id` from Task 1's DB write. Task 3 needs `pr_diff_id` too. Celery's built-in chaining (`chain()`) passes return values automatically, but you lose error isolation — one task's failure cascades.
+**Fix:** Strip markdown fences before parsing. If parsing still fails after that, return a safe default — score 0, approved false — instead of crashing the Celery task and losing the review.
 
-**Fix:** Each task explicitly queries the DB for what it needs, stores results, then calls the next task with `.delay()`. More DB queries, but tasks are fully independent. Task 3 can be re-run standalone without re-running Task 1 and 2. This matters for the retry endpoint.
+---
 
-### 6. Factory-boy and password hashing in tests
+### Celery task isolation
 
-`UserFactory` with `PostGenerationMethodCall('set_password', ...)` hashes the password after creation — but Django doesn't re-save the instance automatically after post-generation hooks in newer versions. Every test login returned 401.
+Celery's built-in `chain()` passes return values between tasks automatically but one task failure cascades and you lose the ability to retry individual tasks.
 
-**Fix:** Override `_after_postgeneration()` in `UserFactory` to call `instance.save()` after the password is set. Simple, but took an hour to trace.
+**Fix:** Each task writes its result to the database explicitly, then calls the next task with `.delay()`. Tasks are completely independent. Task 3 can be re-run alone via the retry endpoint without re-fetching the diff from GitHub.
+
+---
+
+### factory-boy password not saving in tests
+
+`PostGenerationMethodCall('set_password', ...)` hashes the password after model creation. Newer factory-boy does not call `.save()` again after post-generation hooks. Every test login returned 401.
+
+**Fix:** Override `_after_postgeneration()` in `UserFactory` to explicitly call `instance.save()` after the password is set.
+
+---
+
+## Review Scoring
+
+```
+90 - 100   Excellent     Auto-approved
+75 -  89   Good          Approved with notes
+50 -  74   Needs work    Not approved
+ 0 -  49   Critical      Blocked from merge
+```
+
+`approved = true` only when `score >= 75`
+
+---
+
+## Deploy to Render
+
+1. Push code to GitHub
+2. Render → New → Blueprint → connect your repo
+3. Render reads `render.yaml` automatically — creates web service, worker, beat scheduler, PostgreSQL, Redis
+4. Add three env vars in Render dashboard: `GROQ_API_KEY`, `GITHUB_TOKEN`, `WEBHOOK_SECRET_ENCRYPTION_KEY`
+5. Deploy
 
 ---
 
@@ -412,66 +379,26 @@ Task 2 needs the `pr_diff_id` from Task 1's DB write. Task 3 needs `pr_diff_id` 
 code_review_bot/
 ├── config/
 │   ├── settings/
-│   │   ├── base.py          # All shared settings
-│   │   ├── development.py   # Local dev overrides
-│   │   └── production.py    # Production + security headers
-│   ├── celery.py            # Celery app + autodiscover
-│   └── urls.py              # Root URL router
-│
+│   │   ├── base.py           shared settings
+│   │   ├── development.py    local overrides
+│   │   └── production.py     production + security headers
+│   ├── celery.py             Celery app config
+│   └── urls.py               root URL router
 ├── apps/
-│   ├── core/                # TimeStampedModel, middleware, exceptions
-│   ├── users/               # CustomUser + JWT auth endpoints
-│   ├── repositories/        # GitHub repo registration + secret management
-│   ├── webhooks/            # Webhook receiver, HMAC verification, Task 1
-│   └── reviews/             # Diff fetching (Task 2), AI review (Task 3), REST API
-│
+│   ├── core/                 base model, middleware, exceptions
+│   ├── users/                custom user + JWT auth
+│   ├── repositories/         repo registration + secret management
+│   ├── webhooks/             webhook receiver + HMAC verification + Task 1
+│   └── reviews/              diff fetch (Task 2) + AI review (Task 3) + REST API
 ├── tests/
-│   ├── factories.py         # Test data factories
-│   └── test_*.py            # 66 tests across 7 files
-│
+│   ├── factories.py          test data factories
+│   └── test_*.py             66 tests across 7 files
 ├── Dockerfile
 ├── docker-compose.yml
-├── render.yaml              # Render deployment
-├── .github/workflows/ci.yml # GitHub Actions
-└── requirements.txt
+├── render.yaml
+└── .github/workflows/ci.yml
 ```
 
 ---
 
-## Deployment (Render)
-
-1. Push to GitHub
-2. Go to [render.com](https://render.com) → **New** → **Blueprint**
-3. Connect your repo — Render reads `render.yaml` automatically
-4. Add three env vars manually in Render dashboard:
-   - `GROQ_API_KEY`
-   - `GITHUB_TOKEN`
-   - `WEBHOOK_SECRET_ENCRYPTION_KEY`
-5. Deploy
-
-Render creates: Django web service + Celery worker + Celery beat + PostgreSQL + Redis.
-
----
-
-## Scoring Logic
-
-```
-Score 90–100  → Excellent → Auto-approved ✅
-Score 75–89   → Good, minor issues → Approved ✅
-Score 50–74   → Needs work → Not approved ❌
-Score 0–49    → Critical issues → Blocked ❌
-
-approved = true  only if  score >= 75
-```
-
----
-
-<div align="center">
-
-Built by **Sumit Shukla**
-
-*The bot reviews code faster than I can open the PR tab.*
-
-[GitHub](https://github.com/Sumitshukla7318) · [Swagger Docs](http://localhost:8000/api/docs/)
-
-</div>
+Built by **Sumit Shukla** — [GitHub](https://github.com/Sumitshukla7318)
